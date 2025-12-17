@@ -1,10 +1,13 @@
 import asyncio
 import sys
 import logging
-from fastapi import FastAPI, HTTPException
+from typing import Optional, List, Dict
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 from semantic_search import get_answer as get_answer_from_semantic_search
 from recursive_crawl import build_knowledge_base as build_knowledge_base_from_url
+from pinecone_client import upsert_data
+from file_processor import extract_text, chunk_text, format_records_for_pinecone
 from pydantic import BaseModel
 
 # Fix Windows event loop policy for subprocess support
@@ -29,6 +32,7 @@ async def global_exception_handler(request, exc):
 class UserQuery(BaseModel):
     user_query: str
     assistant: str
+    history: Optional[List[Dict[str, str]]] = None
 
 class KnowledgeBase(BaseModel):
     url_to_scrape: str
@@ -58,6 +62,7 @@ async def get_answer(user_query: UserQuery):
     try:
         q = user_query.user_query
         assistant = user_query.assistant
+        history = user_query.history
         
         if not q or not q.strip():
             raise HTTPException(status_code=400, detail="User query cannot be empty")
@@ -65,7 +70,7 @@ async def get_answer(user_query: UserQuery):
         if not assistant or not assistant.strip():
             raise HTTPException(status_code=400, detail="Assistant name cannot be empty")
         
-        answer = await get_answer_from_semantic_search(q, assistant)
+        answer = await get_answer_from_semantic_search(q, assistant, history)
         
         if not answer:
             answer = "I couldn't find relevant information to answer your question. Please try rephrasing or ensure the knowledge base has been built."
@@ -124,3 +129,122 @@ async def build_knowledge_base(knowledge_base: KnowledgeBase):
     except Exception as e:
         logger.error(f"Error in build_knowledge_base endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error building knowledge base: {str(e)}")
+
+
+@app.post("/upload_file")
+async def upload_file(
+    file: UploadFile = File(...),
+    assistant: str = Form(...)
+):
+    """
+    Upload a file (PDF, TXT, DOCX, PPT) and store its content in Pinecone.
+    
+    Args:
+        file: Uploaded file (PDF, TXT, DOCX, DOCS, PPT, PPTX)
+        assistant: Assistant identifier for filtering
+        
+    Returns:
+        dict: Status and message about the file upload process
+        
+    Raises:
+        HTTPException: If there's an error processing the file
+    """
+    try:
+        # Validate assistant parameter
+        if not assistant or not assistant.strip():
+            raise HTTPException(status_code=400, detail="Assistant name cannot be empty")
+        
+        assistant = assistant.strip()
+        
+        # Validate file extension
+        file_extension = file.filename.split('.')[-1] if '.' in file.filename else ''
+        allowed_extensions = ['pdf', 'txt', 'docx', 'docs', 'ppt', 'pptx']
+        
+        if file_extension.lower() not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed types: {', '.join(allowed_extensions)}"
+            )
+        
+        # Read file content
+        try:
+            file_content = await file.read()
+        except Exception as e:
+            logger.error(f"Error reading file: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+        
+        # Check if file is empty
+        if len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="File is empty")
+        
+        # File size limit check (1MB)
+        max_size = 1 * 1024 * 1024  # 1MB in bytes
+        if len(file_content) > max_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File size exceeds maximum allowed size of 1MB"
+            )
+        
+        logger.info(f"Processing file '{file.filename}' for assistant '{assistant}'")
+        
+        # Extract text from file
+        try:
+            extracted_text = extract_text(file_content, file_extension)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            logger.error(f"Error extracting text from file: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to extract text from file: {str(e)}"
+            )
+        
+        # Validate extracted text
+        if not extracted_text or not extracted_text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="No text content could be extracted from the file"
+            )
+        
+        # Chunk the text
+        chunks = chunk_text(extracted_text, chunk_size=2000, overlap=100)
+        
+        if not chunks:
+            raise HTTPException(
+                status_code=400,
+                detail="No valid chunks could be created from the extracted text"
+            )
+        
+        # Format records for Pinecone
+        base_id = f"{assistant}_file_{file.filename.replace('.', '_').replace(' ', '_')}"
+        records = format_records_for_pinecone(chunks, assistant, base_id)
+        
+        # Upsert to Pinecone
+        try:
+            upsert_result = upsert_data(records)
+            logger.info(f"Successfully processed file '{file.filename}': {upsert_result}")
+            
+            return {
+                "status": "success",
+                "message": "File uploaded and processed successfully",
+                "chunks_created": len(chunks),
+                "assistant": assistant,
+                "filename": file.filename
+            }
+        except ValueError as validation_error:
+            logger.error(f"Validation error upserting data to Pinecone: {str(validation_error)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Data validation failed: {str(validation_error)}"
+            )
+        except Exception as upsert_error:
+            logger.error(f"Error upserting data to Pinecone: {str(upsert_error)}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to store data in Pinecone: {str(upsert_error)}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in upload_file endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
