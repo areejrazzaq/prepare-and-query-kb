@@ -3,6 +3,7 @@ import sys
 import logging
 from typing import Optional, List, Dict
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from semantic_search import get_answer as get_answer_from_semantic_search
 from recursive_crawl import build_knowledge_base as build_knowledge_base_from_url
@@ -19,6 +20,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="RAG Pipeline API", version="1.0.0")
+
+# Configure CORS middleware
+# Allow requests from frontend development servers and production domains
+origins = [
+    "http://localhost:3000",  # React default port
+    "http://localhost:3001",  # Alternative React port
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    # Add production domains here when deploying
+    # "https://yourdomain.com",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, OPTIONS, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
 
 # Global exception handler
 @app.exception_handler(Exception)
