@@ -25,6 +25,8 @@ app = FastAPI(title="RAG Pipeline API", version="1.0.0")
 # Allow requests from frontend development servers and production domains
 origins = [
     "http://localhost:3000",  # React default port
+    "http://localhost:8080",  # React default port
+    "https://yourcodestudio.com",  # React default port
     "http://localhost:3001",  # Alternative React port
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
