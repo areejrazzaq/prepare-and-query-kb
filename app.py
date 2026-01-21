@@ -28,9 +28,13 @@ origins = [
     "http://localhost:3001",  # Alternative React port
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
-    # Add production domains here when deploying
+    # Production domains - add your frontend URL here
     # "https://yourdomain.com",
+    # "https://your-app.onrender.com",
 ]
+
+# For development/testing, you can use allow_origins=["*"] but it's less secure
+# In production, specify exact origins above
 
 app.add_middleware(
     CORSMiddleware,
